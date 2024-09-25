@@ -8,7 +8,7 @@
 # Description: Build OpenWrt using GitHub Actions
 #
 
-name: build-immortalwrt-23.05-SNAPSHOT-mtk-filogic
+name: 23.05-mtkfilogic
 
 permissions: write-all
 #开启写权限，防止无法上传到release
@@ -17,16 +17,19 @@ on:
   repository_dispatch:
   workflow_dispatch:
   schedule:
-   - cron: 0 19 * * 6
-   #   分,时,日,月,星期。每周 日 19时执行一次 (UTC时间)
+   - cron: 0 20 * * 6
+   #   分,时,日,月,星期。每周 日 20时执行一次 (UTC时间)
   
 env:
   REPO_URL: https://github.com/immortalwrt/immortalwrt
   REPO_BRANCH: openwrt-23.05
+  PLATFORM_FILE: configs/Platform-filogic.txt
+  CONFIG_FILE: configs/Packages-lite.txt
   FREE_DISK_SH: scripts/free_disk_space.sh
   ENV_SH: scripts/environment.sh
-  DIY_SH: scripts/O23-SNAPSHOT/diy.sh
-  CLASH_CORE: scripts/preset-clash-core.sh
+  SETTINGS_SH: scripts/init-settings.sh
+  PACKAGES_SH: scripts/packages.sh
+  CLASH_CORE_SH: scripts/preset-clash-core-arm64.sh
   UPLOAD_BIN_DIR: false
   UPLOAD_FIRMWARE: false
   UPLOAD_RELEASE: true
@@ -50,10 +53,12 @@ jobs:
         sudo -E apt-get -qq full-upgrade -y
         chmod +x $ENV_SH && $ENV_SH
         sudo timedatectl set-timezone "$TZ"
+        docker image prune -a -f
+        docker container prune -f
         sudo mkdir -p /workdir
         sudo chown $USER:$GROUPS /workdir
 
-    - name: 检查空间使用情况
+    - name: 检查空间使用情况1
       if: (!cancelled())
       run: df -hT
 
@@ -67,22 +72,24 @@ jobs:
       uses: klever1988/cachewrtbuild@main
       with:
         ccache: 'true'
-        mixkey: 'openwrt23-cortexa53'
+        mixkey: '23.05-filogic'
         prefix: ${{ github.workspace }}/openwrt
 
     - name: 更新 & 安装 feeds & 执行脚本
       run: |
         cd openwrt
-        ./scripts/feeds update -a && ./scripts/feeds install -a        
-        chmod +x $GITHUB_WORKSPACE/$DIY_SH && $GITHUB_WORKSPACE/$DIY_SH
+        ./scripts/feeds update -a && ./scripts/feeds update -a
+        chmod +x $GITHUB_WORKSPACE/$SETTINGS_SH && $GITHUB_WORKSPACE/$SETTINGS_SH
+        chmod +x $GITHUB_WORKSPACE/$PACKAGES_SH && $GITHUB_WORKSPACE/$PACKAGES_SH
+        chmod +x $GITHUB_WORKSPACE/$CLASH_CORE_SH && $GITHUB_WORKSPACE/$CLASH_CORE_SH
+        ./scripts/feeds install -a && ./scripts/feeds install -a
 
     - name: 导入补丁和配置 & 下载文件
       run: |
         [ -e files ] && mv files openwrt/files
-        cat configs/Platform-filogic.txt >> openwrt/.config
-        cat configs/Packages-reduce.txt >> openwrt/.config
+        [ -e $CPLATFORM_FILE ] && cat $PLATFORM_FILE >> openwrt/.config
+        [ -e $CONFIG_FILE ] && cat $CONFIG_FILE >> openwrt/.config
         cd openwrt
-        chmod +x $GITHUB_WORKSPACE/$CLASH_CORE && $GITHUB_WORKSPACE/$CLASH_CORE
         make defconfig
         make download -j8 V=10
         find dl -size -1024c -exec ls -l {} \;
@@ -96,7 +103,7 @@ jobs:
         make -j$(($(nproc)+1)) || make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
 
-    - name: 空间使用情况
+    - name: 空间使用情况2
       if: (!cancelled())
       run: df -hT
 
@@ -130,12 +137,12 @@ jobs:
       id: tag
       if: env.UPLOAD_RELEASE == 'true' && steps.compile.outputs.status == 'success' && !cancelled()
       run: |
-        echo -e "✅ immortalwrt-23.05-SNAPSHOT_MTK filogic平台，5.15内核\n⁉️ 使用nftables 框架，不兼容的插件被精简了。我也就用smartdns+pw+vlmcsd(pw不好用请尝试更新规则)\nℹ 256M运存建议设置每天重启一次，不然容易出现爆运存导致卡网" >> release.txt
-        echo "release_tag=$(date +"%Y.%m.%d-MTK-filogic_23.05")" >> $GITHUB_OUTPUT
+        echo -e "✅ 23.05 源码 MTK filogic 平台 \n⁉️ 刷不进去的，可以尝试同机型ubootmod版本(应该是闪存有坏快的缘故)\nℹ 256M运存建议设置每天重启一次，不然容易出现爆运存导致卡网" >> release.txt
+        echo "release_tag=$(date +"%Y.%m.%d-23.05_filogic")" >> $GITHUB_OUTPUT
         echo "status=success" >> $GITHUB_OUTPUT
 
     - name: 上传固件发布
-      uses: softprops/action-gh-release@v0.1.15
+      uses: softprops/action-gh-release@v2.0.4
       if: steps.tag.outputs.status == 'success' && !cancelled()
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -144,16 +151,16 @@ jobs:
         body_path: release.txt
         files: ${{ env.FIRMWARE }}/*
 
-    - name: 删除旧发布的固件
-      uses: dev-drprasad/delete-older-releases@v0.2.1
+    - name: 删除以前发布的固件
+      uses: dev-drprasad/delete-older-releases@v0.3.3
       if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
       with:
-        keep_latest: 7
+        keep_latest: 10
         delete_tags: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: 删除过时工作流程
+    - name: 删除以前的工作流程
       uses: Mattraks/delete-workflow-runs@v2
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
